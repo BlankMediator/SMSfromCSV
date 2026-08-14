@@ -7,8 +7,10 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.telephony.SmsManager
+import android.telephony.SubscriptionManager
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -35,6 +37,7 @@ class MainActivity : Activity() {
     private companion object {
         const val PICK_CSV_REQUEST = 1001
         const val SEND_SMS_PERMISSION_REQUEST = 1002
+        const val SIM_READ_PERMISSION_REQUEST = 1003
         const val MAX_BATCH_SIZE = 500
         const val MAX_CSV_BYTES = 5 * 1024 * 1024
         const val DEFAULT_DELAY_MS = 1000
@@ -45,6 +48,10 @@ class MainActivity : Activity() {
     private lateinit var importButton: Button
     private lateinit var modeSpinner: Spinner
     private lateinit var messageInput: EditText
+    private lateinit var simModeSpinner: Spinner
+    private lateinit var simPicker: Spinner
+    private lateinit var simHelp: TextView
+    private lateinit var refreshSimsButton: Button
     private lateinit var delayInput: EditText
     private lateinit var csvStatus: TextView
     private lateinit var modeHelp: TextView
@@ -57,6 +64,7 @@ class MainActivity : Activity() {
     private var table: CsvTable? = null
     private var previewReady = false
     private var pendingSend: PendingSend? = null
+    private var availableSims: List<SimTarget> = emptyList()
     private var sending = false
     private var importRequestId = 0
     private val importExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -66,6 +74,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(buildUi())
         updateModeUi(MessageMode.SAME)
+        updateSimRoutingUi(SimRoutingMode.DEFAULT)
 
         if (!packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)) {
             AlertDialog.Builder(this)
@@ -91,12 +100,12 @@ class MainActivity : Activity() {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "Import a CSV, review the rendered messages, then submit individual SMS messages through this phone's default SMS SIM. Recipient data stays on the device."
+            text = "Import a CSV, review the rendered messages and SIM route, then submit individual SMS messages through this phone. Recipient data stays on the device."
             textSize = 16f
             setPadding(0, dp(8), 0, dp(12))
         })
         root.addView(TextView(this).apply {
-            text = "Dual-SIM phone: select a default SMS SIM in Android settings before sending."
+            text = "Dual-SIM phone: use Android's default, choose one active SIM for the batch, or route each CSV row with a sim column."
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(0, 0, 0, dp(18))
         })
@@ -108,7 +117,7 @@ class MainActivity : Activity() {
         root.addView(importButton)
 
         csvStatus = TextView(this).apply {
-            text = "No CSV loaded. Required column: phone. Optional columns include name, link, reference, and message."
+            text = "No CSV loaded. Required column: phone. Optional columns include name, link, reference, message, and sim."
             setPadding(0, dp(8), 0, dp(18))
             setTextIsSelectable(true)
         }
@@ -158,7 +167,61 @@ class MainActivity : Activity() {
             )
         )
 
-        root.addView(sectionLabel("3. Sending pace"))
+        root.addView(sectionLabel("3. SIM routing"))
+        simModeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf(
+                    "Use Android default SMS SIM",
+                    "Choose one SIM for this batch",
+                    "Use CSV 'sim' column per recipient"
+                )
+            )
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    val routingMode = selectedSimRoutingMode()
+                    updateSimRoutingUi(routingMode)
+                    invalidatePreview()
+                    if (routingMode != SimRoutingMode.DEFAULT && !sending) {
+                        ensureSimAccessAndLoad()
+                    }
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        root.addView(simModeSpinner)
+
+        simPicker = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("No active SIMs loaded")
+            )
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    invalidatePreview()
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        root.addView(simPicker)
+
+        refreshSimsButton = Button(this).apply {
+            text = "Load / refresh active SIMs"
+            setOnClickListener { ensureSimAccessAndLoad() }
+        }
+        root.addView(refreshSimsButton)
+
+        simHelp = TextView(this).apply {
+            setPadding(0, dp(8), 0, dp(10))
+            setTextIsSelectable(true)
+        }
+        root.addView(simHelp)
+
+        root.addView(sectionLabel("4. Sending pace"))
         root.addView(TextView(this).apply {
             text = "Delay between recipients in milliseconds (0–$MAX_DELAY_MS). This paces the handset only; carrier limits still apply."
         })
@@ -170,7 +233,7 @@ class MainActivity : Activity() {
         root.addView(delayInput)
 
         previewButton = Button(this).apply {
-            text = "4. Preview and validate"
+            text = "5. Preview and validate"
             setOnClickListener { previewMessages() }
         }
         root.addView(previewButton)
@@ -233,6 +296,16 @@ class MainActivity : Activity() {
         else -> MessageMode.SAME
     }
 
+    private fun selectedSimRoutingMode(): SimRoutingMode = when (simModeSpinner.selectedItemPosition) {
+        1 -> SimRoutingMode.FIXED
+        2 -> SimRoutingMode.PER_ROW
+        else -> SimRoutingMode.DEFAULT
+    }
+
+    private fun selectedFixedSubscriptionId(): Int? {
+        return availableSims.getOrNull(simPicker.selectedItemPosition)?.subscriptionId
+    }
+
     private fun updateModeUi(mode: MessageMode) {
         if (!::messageInput.isInitialized || !::modeHelp.isInitialized) return
         when (mode) {
@@ -252,6 +325,139 @@ class MainActivity : Activity() {
                 modeHelp.text = "Each row supplies its own message. Placeholders inside a row's message are also rendered."
             }
         }
+    }
+
+    private fun updateSimRoutingUi(mode: SimRoutingMode) {
+        if (!::simPicker.isInitialized || !::refreshSimsButton.isInitialized || !::simHelp.isInitialized) return
+        val usesLoadedSims = mode != SimRoutingMode.DEFAULT
+        simPicker.visibility = if (mode == SimRoutingMode.FIXED) View.VISIBLE else View.GONE
+        refreshSimsButton.visibility = if (usesLoadedSims) View.VISIBLE else View.GONE
+        simPicker.isEnabled = !sending && mode == SimRoutingMode.FIXED && availableSims.isNotEmpty()
+        refreshSimsButton.isEnabled = !sending && usesLoadedSims
+
+        simHelp.text = when (mode) {
+            SimRoutingMode.DEFAULT ->
+                "Uses Android's configured default SMS subscription. Preview is blocked if Android has no default."
+            SimRoutingMode.FIXED -> if (availableSims.isEmpty()) {
+                "Load active SIMs, then choose the source SIM for the whole batch."
+            } else {
+                "Choose the source SIM above. Changing it invalidates the preview so the route must be checked again."
+            }
+            SimRoutingMode.PER_ROW -> if (availableSims.isEmpty()) {
+                "Load active SIMs before validating the CSV 'sim' column."
+            } else {
+                "CSV 'sim' accepts 1, 2, SIM1, SIM2, slot1, slot2, sub:<id>, an exact SIM label/carrier, or an exposed SIM phone number."
+            }
+        }
+    }
+
+    private fun ensureSimAccessAndLoad() {
+        if (!::simPicker.isInitialized) return
+        val missingPermissions = buildList {
+            if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.READ_PHONE_STATE)
+            }
+            if (checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.READ_PHONE_NUMBERS)
+            }
+        }
+        if (missingPermissions.isEmpty()) {
+            loadActiveSims()
+        } else {
+            requestPermissions(missingPermissions.toTypedArray(), SIM_READ_PERMISSION_REQUEST)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun loadActiveSims() {
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            availableSims = emptyList()
+            replaceSimPickerItems(listOf("Phone/SIM permission required"), null)
+            updateSimRoutingUi(selectedSimRoutingMode())
+            simHelp.text = "Phone permission is required to list active SIMs. Default-SIM routing remains available."
+            invalidatePreview()
+            return
+        }
+
+        val manager = getSystemService(SubscriptionManager::class.java)
+        if (manager == null) {
+            availableSims = emptyList()
+            replaceSimPickerItems(listOf("Subscription service unavailable"), null)
+            updateSimRoutingUi(selectedSimRoutingMode())
+            simHelp.text = "Android's subscription service is unavailable on this device."
+            invalidatePreview()
+            return
+        }
+
+        val previousSelection = selectedFixedSubscriptionId()
+        val canReadNumbers =
+            checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED
+        val loaded = runCatching {
+            manager.activeSubscriptionInfoList.orEmpty()
+                .filter { it.simSlotIndex >= 0 }
+                .map { info ->
+                    val number = if (canReadNumbers) {
+                        runCatching {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                manager.getPhoneNumber(info.subscriptionId)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                info.number.orEmpty()
+                            }
+                        }.getOrDefault("")
+                    } else {
+                        ""
+                    }
+                    SimTarget(
+                        subscriptionId = info.subscriptionId,
+                        slotNumber = info.simSlotIndex + 1,
+                        displayName = info.displayName?.toString().orEmpty(),
+                        carrierName = info.carrierName?.toString().orEmpty(),
+                        phoneNumber = number.trim()
+                    )
+                }
+                .sortedWith(compareBy(SimTarget::slotNumber, SimTarget::subscriptionId))
+        }.getOrElse { throwable ->
+            Log.e(LOG_TAG, "Could not load active SIMs", throwable)
+            availableSims = emptyList()
+            replaceSimPickerItems(listOf("Could not load active SIMs"), null)
+            updateSimRoutingUi(selectedSimRoutingMode())
+            simHelp.text = "Could not load active SIMs: ${throwable.message ?: throwable.javaClass.simpleName}"
+            invalidatePreview()
+            return
+        }
+
+        availableSims = loaded
+        if (loaded.isEmpty()) {
+            replaceSimPickerItems(listOf("No active SMS SIMs found"), null)
+        } else {
+            val defaultSubscriptionId = SubscriptionManager.getDefaultSmsSubscriptionId()
+            val labels = loaded.map { sim ->
+                sim.label() + if (sim.subscriptionId == defaultSubscriptionId) " — Android default" else ""
+            }
+            val selectedIndex = loaded.indexOfFirst { it.subscriptionId == previousSelection }
+                .takeIf { it >= 0 } ?: 0
+            replaceSimPickerItems(labels, selectedIndex)
+        }
+
+        updateSimRoutingUi(selectedSimRoutingMode())
+        if (loaded.isNotEmpty() && !canReadNumbers) {
+            simHelp.text = simHelp.text.toString() +
+                " SIM phone numbers are hidden; grant Phone numbers permission or use SIM1/SIM2."
+        } else if (loaded.isNotEmpty() && loaded.none { it.phoneNumber.isNotBlank() }) {
+            simHelp.text = simHelp.text.toString() +
+                " Android did not report SIM phone numbers; use SIM1/SIM2, a label, or sub:<id>."
+        }
+        invalidatePreview()
+    }
+
+    private fun replaceSimPickerItems(labels: List<String>, selectedIndex: Int?) {
+        simPicker.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            labels
+        )
+        if (selectedIndex != null) simPicker.setSelection(selectedIndex, false)
     }
 
     private fun invalidatePreview() {
@@ -329,8 +535,21 @@ class MainActivity : Activity() {
     private fun showImportedCsv(imported: ImportedCsv) {
         val parsed = imported.table
         table = parsed
+        val previousMode = selectedMode()
+        val suggestedMode = MessageCompiler.suggestedModeAfterImport(
+            table = parsed,
+            currentMode = previousMode,
+            editorText = messageInput.text.toString()
+        )
+        val automaticallySelectedPerRowMode = suggestedMode != previousMode
+        if (automaticallySelectedPerRowMode) {
+            modeSpinner.setSelection(2)
+        }
         csvStatus.text = buildString {
             append("Loaded ${parsed.rows.size} rows. Columns: ${parsed.headers.joinToString()}.")
+            if (automaticallySelectedPerRowMode) {
+                append(" Message mode automatically set to the CSV 'message' column.")
+            }
             if (parsed.rows.size > MAX_BATCH_SIZE) {
                 append(" Send All is capped at $MAX_BATCH_SIZE recipients.")
             }
@@ -357,12 +576,11 @@ class MainActivity : Activity() {
 
     private fun previewMessages() {
         val compilation = compileOutgoing()
-        val smsManager = runCatching { getSmsManager() }.getOrNull()
-        val segmentCounts = if (smsManager == null) {
-            emptyList()
-        } else {
-            compilation.messages.map { smsManager.divideMessage(it.text).size.coerceAtLeast(1) }
-        }
+        val segmentCounts = runCatching {
+            compilation.messages.map { message ->
+                getSmsManager(message.subscriptionId).divideMessage(message.text).size.coerceAtLeast(1)
+            }
+        }.getOrDefault(emptyList())
 
         previewText.text = buildString {
             append("Recipients: ${compilation.messages.size}\n")
@@ -387,7 +605,7 @@ class MainActivity : Activity() {
             if (compilation.messages.isNotEmpty()) {
                 append("\n--- Preview (first ${min(20, compilation.messages.size)}) ---\n")
                 compilation.messages.take(20).forEachIndexed { index, message ->
-                    append("\n${index + 1}. ${message.phone}\n${message.text}\n")
+                    append("\n${index + 1}. ${message.phone}\nVia: ${message.simLabel}\n${message.text}\n")
                 }
                 if (compilation.messages.size > 20) {
                     append("\n… ${compilation.messages.size - 20} more recipient(s).")
@@ -412,6 +630,11 @@ class MainActivity : Activity() {
             previewText.text = "The data changed. Preview and resolve errors before sending."
             return
         }
+        if (!routedSubscriptionsAreStillActive(compilation.messages)) {
+            invalidatePreview()
+            previewText.text = "The active SIMs changed after preview. Reload the active SIMs and preview again before sending."
+            return
+        }
         if (!testOnly && compilation.messages.size > MAX_BATCH_SIZE) {
             Toast.makeText(this, "Batch exceeds the $MAX_BATCH_SIZE-recipient safety cap.", Toast.LENGTH_LONG).show()
             return
@@ -419,10 +642,13 @@ class MainActivity : Activity() {
         val delayMs = readDelayMs() ?: return
         val batch = if (testOnly) listOf(compilation.messages.first()) else compilation.messages
         val estimatedSegments = runCatching {
-            val manager = getSmsManager()
-            batch.sumOf { manager.divideMessage(it.text).size.coerceAtLeast(1) }
+            batch.sumOf { message ->
+                getSmsManager(message.subscriptionId).divideMessage(message.text).size.coerceAtLeast(1)
+            }
         }.getOrNull()
-        val sample = batch.take(3).joinToString("\n\n") { "${it.phone}:\n${it.text}" }
+        val sample = batch.take(3).joinToString("\n\n") {
+            "${it.phone} via ${it.simLabel}:\n${it.text}"
+        }
         val warnings = if (compilation.warnings.isEmpty()) {
             ""
         } else {
@@ -432,7 +658,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle(if (testOnly) "Send one test SMS?" else "Send to ${batch.size} recipients?")
             .setMessage(buildString {
-                append("This submits ${batch.size} individual message(s) through the default SMS SIM and may incur carrier charges. Sending cannot be undone.")
+                append("This submits ${batch.size} individual message(s) through the SIM route shown below and may incur carrier charges. Sending cannot be undone.")
                 if (estimatedSegments != null) append(" Estimated SMS segments: $estimatedSegments.")
                 append(" Delay: ${delayMs}ms between recipients.\n\nSample:\n$sample$warnings")
             })
@@ -456,13 +682,32 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != SEND_SMS_PERMISSION_REQUEST) return
-        val request = pendingSend
-        pendingSend = null
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && request != null) {
-            sendBatch(request)
-        } else {
-            Toast.makeText(this, "SMS permission is required to send through the SIM.", Toast.LENGTH_LONG).show()
+        when (requestCode) {
+            SIM_READ_PERMISSION_REQUEST -> {
+                if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                    loadActiveSims()
+                } else {
+                    availableSims = emptyList()
+                    replaceSimPickerItems(listOf("Phone/SIM permission required"), null)
+                    updateSimRoutingUi(selectedSimRoutingMode())
+                    simHelp.text = "Phone permission was denied. Default-SIM routing remains available."
+                    invalidatePreview()
+                }
+            }
+            SEND_SMS_PERMISSION_REQUEST -> {
+                val request = pendingSend
+                pendingSend = null
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && request != null) {
+                    if (routedSubscriptionsAreStillActive(request.messages)) {
+                        sendBatch(request)
+                    } else {
+                        invalidatePreview()
+                        previewText.text = "The SIM route changed while permission was being granted. Reload active SIMs and preview again."
+                    }
+                } else {
+                    Toast.makeText(this, "SMS permission is required to send through the SIM.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -476,19 +721,16 @@ class MainActivity : Activity() {
         senderExecutor.submit {
             var submitted = 0
             val failures = mutableListOf<String>()
-            val smsManager = try {
-                getSmsManager()
-            } catch (exception: Exception) {
-                postToActiveUi {
-                    finishSendingUi("Could not access Android's SMS service: ${exception.message}")
-                }
-                return@submit
-            }
+            val submittedBySim = linkedMapOf<String, Int>()
+            val smsManagers = mutableMapOf<Int?, SmsManager>()
 
             for ((index, outgoing) in batch.withIndex()) {
                 if (Thread.currentThread().isInterrupted) break
 
                 try {
+                    val smsManager = smsManagers.getOrPut(outgoing.subscriptionId) {
+                        getSmsManager(outgoing.subscriptionId)
+                    }
                     val parts = smsManager.divideMessage(outgoing.text)
                     if (parts.size <= 1) {
                         smsManager.sendTextMessage(outgoing.phone, null, outgoing.text, null, null)
@@ -496,8 +738,9 @@ class MainActivity : Activity() {
                         smsManager.sendMultipartTextMessage(outgoing.phone, null, parts, null, null)
                     }
                     submitted++
+                    submittedBySim[outgoing.simLabel] = submittedBySim.getOrDefault(outgoing.simLabel, 0) + 1
                 } catch (exception: Exception) {
-                    failures += "CSV row ${outgoing.rowNumber} (${outgoing.phone}): ${exception.message ?: exception.javaClass.simpleName}"
+                    failures += "CSV row ${outgoing.rowNumber} (${outgoing.phone}, ${outgoing.simLabel}): ${exception.message ?: exception.javaClass.simpleName}"
                 }
 
                 postToActiveUi {
@@ -517,6 +760,10 @@ class MainActivity : Activity() {
             postToActiveUi {
                 val result = buildString {
                     append("Finished. $submitted/${batch.size} submitted to Android's SMS service.")
+                    if (submittedBySim.isNotEmpty()) {
+                        append("\nSubmitted routes: ")
+                        append(submittedBySim.entries.joinToString(" | ") { "${it.key}: ${it.value}" })
+                    }
                     if (failures.isNotEmpty()) {
                         append(" ${failures.size} immediate failure(s):\n")
                         failures.take(30).forEach { append("• $it\n") }
@@ -545,6 +792,9 @@ class MainActivity : Activity() {
     private fun setControlsEnabled(enabled: Boolean) {
         importButton.isEnabled = enabled
         modeSpinner.isEnabled = enabled
+        simModeSpinner.isEnabled = enabled
+        simPicker.isEnabled = enabled && selectedSimRoutingMode() == SimRoutingMode.FIXED && availableSims.isNotEmpty()
+        refreshSimsButton.isEnabled = enabled && selectedSimRoutingMode() != SimRoutingMode.DEFAULT
         delayInput.isEnabled = enabled
         previewButton.isEnabled = enabled
         messageInput.isEnabled = enabled && selectedMode() != MessageMode.PER_ROW
@@ -555,7 +805,59 @@ class MainActivity : Activity() {
     private fun compileOutgoing(): Compilation {
         val data = table
             ?: return Compilation(emptyList(), listOf("Import a CSV first."), emptyList())
-        return MessageCompiler.compile(data, selectedMode(), messageInput.text.toString())
+        val routingMode = selectedSimRoutingMode()
+        val compiled = MessageCompiler.compile(data, selectedMode(), messageInput.text.toString())
+        val initiallyRouted = SimRouter.route(
+            table = data,
+            compilation = compiled,
+            mode = routingMode,
+            fixedSubscriptionId = selectedFixedSubscriptionId(),
+            activeSims = availableSims
+        )
+        val routingErrors = mutableListOf<String>()
+        val routed = if (routingMode == SimRoutingMode.DEFAULT) {
+            val defaultSubscriptionId = SubscriptionManager.getDefaultSmsSubscriptionId()
+            if (defaultSubscriptionId == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                routingErrors += "Android has no default SMS SIM. Choose one SIM in the app before sending."
+                initiallyRouted
+            } else {
+                initiallyRouted.copy(
+                    messages = initiallyRouted.messages.map { message ->
+                        message.copy(
+                            subscriptionId = defaultSubscriptionId,
+                            simLabel = "Android default SMS SIM (subscription $defaultSubscriptionId)"
+                        )
+                    }
+                )
+            }
+        } else {
+            initiallyRouted
+        }
+        if (routingMode != SimRoutingMode.DEFAULT &&
+            checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            routingErrors += "Phone permission is required to validate active SIM routing."
+        }
+        return routed.copy(errors = (routed.errors + routingErrors).distinct())
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun routedSubscriptionsAreStillActive(messages: List<Outgoing>): Boolean {
+        val routedIds = messages.mapNotNull(Outgoing::subscriptionId).toSet()
+        if (routedIds.isEmpty()) return true
+        if (selectedSimRoutingMode() == SimRoutingMode.DEFAULT) {
+            val currentDefault = SubscriptionManager.getDefaultSmsSubscriptionId()
+            return currentDefault != SubscriptionManager.INVALID_SUBSCRIPTION_ID &&
+                routedIds.size == 1 && routedIds.single() == currentDefault
+        }
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            return false
+        }
+        val manager = getSystemService(SubscriptionManager::class.java) ?: return false
+        val activeIds = runCatching {
+            manager.activeSubscriptionInfoList.orEmpty().map { it.subscriptionId }.toSet()
+        }.getOrNull() ?: return false
+        return routedIds.all(activeIds::contains)
     }
 
     private fun readDelayMs(): Int? {
@@ -570,8 +872,15 @@ class MainActivity : Activity() {
         return delay
     }
 
-    private fun getSmsManager(): SmsManager {
-        return getSystemService(SmsManager::class.java) ?: error("SMS service unavailable")
+    private fun getSmsManager(subscriptionId: Int?): SmsManager {
+        val defaultManager = getSystemService(SmsManager::class.java) ?: error("SMS service unavailable")
+        if (subscriptionId == null) return defaultManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            defaultManager.createForSubscriptionId(subscriptionId)
+        } else {
+            @Suppress("DEPRECATION")
+            SmsManager.getSmsManagerForSubscriptionId(subscriptionId)
+        }
     }
 
     override fun onDestroy() {

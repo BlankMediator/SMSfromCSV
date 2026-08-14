@@ -9,14 +9,18 @@ SMSfromCSV is an intentionally small Android utility for private, consent-based 
 - Import with Android's system document picker and do not request broad storage access.
 - Require a `phone` column and support arbitrary additional columns.
 - Support a shared exact message, a shared placeholder template, and per-row messages from a `message` column.
+- Automatically select per-row mode for a complete imported `message` column when the user has not entered or explicitly selected another message mode.
 - Parse standard CSV, including quoted commas, escaped quotes, CRLF/LF, multiline fields, and an optional UTF-8 BOM.
 - Validate phone values conservatively and never infer a missing country code.
 - Block blank messages and unresolved placeholders.
 - Warn about duplicate normalised phone numbers.
 - Preview rendered messages and estimated SMS segments before sending.
+- Allow Android-default, one-SIM-per-batch, and per-row `sim` CSV routing.
+- Resolve per-row SIM values by slot alias, explicit subscription ID, unique label/carrier, or an exposed line number; block unknown or ambiguous routes.
+- Show the resolved SIM route in preview and confirmation before sending.
 - Require explicit confirmation before both test and batch sends.
 - Provide a configurable delay, progress display, 500-recipient safety cap, and multipart SMS support.
-- Request `SEND_SMS` only after confirmation. Never request `INTERNET`, `READ_SMS`, or `RECEIVE_SMS`.
+- Request `SEND_SMS` only after confirmation. Request phone/subscription read permissions only when explicit SIM routing is selected. Never request `INTERNET`, `READ_SMS`, or `RECEIVE_SMS`.
 - Clearly distinguish submission to Android's SMS service from carrier delivery.
 - Keep malformed CSV input and unexpected parser failures from terminating the activity.
 
@@ -24,6 +28,7 @@ SMSfromCSV is an intentionally small Android utility for private, consent-based 
 
 - Run the CSV parser and message compiler unit tests.
 - Cover quoted commas, multiline fields, BOM-prefixed input, invalid phone values, blank messages, unresolved placeholders, and duplicates.
+- Cover fixed and per-row SIM routing, including missing, unknown, and ambiguous selectors.
 - Run Android lint and assemble the debug APK.
 - Verify that importing or previewing cannot send a message automatically.
 - Verify that long messages use Android's multipart SMS API.
