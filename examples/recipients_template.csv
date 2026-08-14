@@ -1,0 +1,4 @@
+name,phone,link,reference,message
+"Jane Smith","+61400000001","https://example.com/details/jane-a1b2","REF-001","Hi {name}, your reference is {reference}. Details: {link}"
+"Michael Chen","+61400000002","https://example.com/details/michael-c3d4","REF-002","Hi {name}, here is the information associated with {reference}: {link}"
+"Priya Patel","+61400000003","https://example.com/details/priya-e5f6","REF-003","Hi {name}, please review your details for {reference}: {link}"
