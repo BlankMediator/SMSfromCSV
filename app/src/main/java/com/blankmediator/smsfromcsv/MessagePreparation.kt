@@ -8,6 +8,12 @@ enum class MessageMode {
     PER_ROW
 }
 
+enum class SimRoutingMode {
+    DEFAULT,
+    FIXED,
+    PER_ROW
+}
+
 data class CsvTable(
     val headers: List<String>,
     val rows: List<Map<String, String>>
@@ -16,7 +22,9 @@ data class CsvTable(
 data class Outgoing(
     val rowNumber: Int,
     val phone: String,
-    val text: String
+    val text: String,
+    val subscriptionId: Int? = null,
+    val simLabel: String = "Android default SMS SIM"
 )
 
 data class Compilation(
@@ -25,7 +33,182 @@ data class Compilation(
     val warnings: List<String>
 )
 
+data class SimTarget(
+    val subscriptionId: Int,
+    val slotNumber: Int,
+    val displayName: String,
+    val carrierName: String,
+    val phoneNumber: String
+) {
+    fun label(): String = buildString {
+        append("SIM $slotNumber")
+        val names = listOf(displayName, carrierName)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+        if (names.isNotEmpty()) append(" — ${names.joinToString(" / ")}")
+        if (phoneNumber.isNotBlank()) append(" — $phoneNumber")
+        append(" (subscription $subscriptionId)")
+    }
+}
+
+object SimRouter {
+    fun route(
+        table: CsvTable,
+        compilation: Compilation,
+        mode: SimRoutingMode,
+        fixedSubscriptionId: Int?,
+        activeSims: List<SimTarget>
+    ): Compilation {
+        val routingErrors = mutableListOf<String>()
+        val routedMessages = when (mode) {
+            SimRoutingMode.DEFAULT -> compilation.messages.map { message ->
+                message.copy(subscriptionId = null, simLabel = "Android default SMS SIM")
+            }
+
+            SimRoutingMode.FIXED -> {
+                val selected = activeSims.singleOrNull { it.subscriptionId == fixedSubscriptionId }
+                if (selected == null) {
+                    routingErrors += "Select an active SIM for this batch."
+                    emptyList()
+                } else {
+                    compilation.messages.map { message ->
+                        message.copy(
+                            subscriptionId = selected.subscriptionId,
+                            simLabel = selected.label()
+                        )
+                    }
+                }
+            }
+
+            SimRoutingMode.PER_ROW -> routePerRow(table, compilation.messages, activeSims, routingErrors)
+        }
+
+        return Compilation(
+            messages = routedMessages,
+            errors = (compilation.errors + routingErrors).distinct(),
+            warnings = compilation.warnings
+        )
+    }
+
+    private fun routePerRow(
+        table: CsvTable,
+        messages: List<Outgoing>,
+        activeSims: List<SimTarget>,
+        errors: MutableList<String>
+    ): List<Outgoing> {
+        if (!table.headers.contains("sim")) {
+            errors += "Per-row SIM routing requires a CSV column named 'sim'."
+            return emptyList()
+        }
+        if (activeSims.isEmpty()) {
+            errors += "Load at least one active SIM before using the CSV 'sim' column."
+            return emptyList()
+        }
+
+        return messages.mapNotNull { message ->
+            val selector = table.rows.getOrNull(message.rowNumber - 2)?.get("sim").orEmpty().trim()
+            if (selector.isEmpty()) {
+                errors += "CSV row ${message.rowNumber} has a blank 'sim' value."
+                return@mapNotNull null
+            }
+
+            when (val match = resolve(selector, activeSims)) {
+                is SimMatch.Found -> message.copy(
+                    subscriptionId = match.sim.subscriptionId,
+                    simLabel = match.sim.label()
+                )
+                SimMatch.Ambiguous -> {
+                    errors += "CSV row ${message.rowNumber} has an ambiguous 'sim' value: '$selector'. Use SIM1/SIM2 or sub:<id>."
+                    null
+                }
+                SimMatch.NotFound -> {
+                    errors += "CSV row ${message.rowNumber} cannot match 'sim' value '$selector' to an active SIM."
+                    null
+                }
+            }
+        }
+    }
+
+    private fun resolve(selector: String, activeSims: List<SimTarget>): SimMatch {
+        val trimmed = selector.trim()
+        val folded = trimmed.lowercase(Locale.ROOT)
+        val compact = folded.filterNot { it == ' ' || it == '_' || it == '-' }
+
+        parsePrefixedSubscriptionId(compact)?.let { subscriptionId ->
+            return activeSims.singleOrNull { it.subscriptionId == subscriptionId }
+                ?.let(SimMatch::Found) ?: SimMatch.NotFound
+        }
+
+        parseSlotNumber(compact)?.let { slotNumber ->
+            return singleMatch(activeSims.filter { it.slotNumber == slotNumber })
+        }
+
+        val selectorPhone = canonicalPhoneNumber(trimmed)
+        if (selectorPhone.isNotEmpty()) {
+            val phoneMatches = activeSims.filter { sim ->
+                val candidate = canonicalPhoneNumber(sim.phoneNumber)
+                candidate.isNotEmpty() && candidate == selectorPhone
+            }
+            if (phoneMatches.isNotEmpty()) return singleMatch(phoneMatches)
+        }
+
+        val labelMatches = activeSims.filter { sim ->
+            folded == sim.displayName.trim().lowercase(Locale.ROOT) ||
+                folded == sim.carrierName.trim().lowercase(Locale.ROOT) ||
+                folded == sim.label().lowercase(Locale.ROOT)
+        }
+        return singleMatch(labelMatches)
+    }
+
+    private fun parsePrefixedSubscriptionId(compact: String): Int? {
+        val prefixes = listOf("sub:", "subscription:", "subid:")
+        val prefix = prefixes.firstOrNull(compact::startsWith) ?: return null
+        return compact.removePrefix(prefix).toIntOrNull()
+    }
+
+    private fun parseSlotNumber(compact: String): Int? {
+        val digits = when {
+            compact.startsWith("sim") -> compact.removePrefix("sim")
+            compact.startsWith("slot") -> compact.removePrefix("slot")
+            compact.all(Char::isDigit) -> compact
+            else -> return null
+        }
+        return digits.toIntOrNull()?.takeIf { it > 0 }
+    }
+
+    private fun canonicalPhoneNumber(value: String): String {
+        return value.trim().filter(Char::isDigit)
+    }
+
+    private fun singleMatch(matches: List<SimTarget>): SimMatch = when (matches.size) {
+        0 -> SimMatch.NotFound
+        1 -> SimMatch.Found(matches.single())
+        else -> SimMatch.Ambiguous
+    }
+
+    private sealed interface SimMatch {
+        data class Found(val sim: SimTarget) : SimMatch
+        data object Ambiguous : SimMatch
+        data object NotFound : SimMatch
+    }
+}
+
 object MessageCompiler {
+    fun suggestedModeAfterImport(
+        table: CsvTable,
+        currentMode: MessageMode,
+        editorText: String
+    ): MessageMode {
+        val hasCompletePerRowMessages = table.headers.contains("message") &&
+            table.rows.isNotEmpty() && table.rows.all { row -> row["message"].orEmpty().isNotBlank() }
+        return if (currentMode == MessageMode.SAME && editorText.isBlank() && hasCompletePerRowMessages) {
+            MessageMode.PER_ROW
+        } else {
+            currentMode
+        }
+    }
+
     fun compile(table: CsvTable, mode: MessageMode, editorText: String): Compilation {
         val errors = mutableListOf<String>()
         val warnings = mutableListOf<String>()
@@ -42,6 +225,9 @@ object MessageCompiler {
         }
         if (mode == MessageMode.PER_ROW && !table.headers.contains("message")) {
             errors += "Per-row mode requires a CSV column named 'message'."
+        }
+        if (errors.isNotEmpty()) {
+            return Compilation(emptyList(), errors.distinct(), warnings)
         }
 
         table.rows.forEachIndexed { index, row ->

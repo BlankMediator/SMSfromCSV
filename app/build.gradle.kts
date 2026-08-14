@@ -10,8 +10,8 @@ android {
         applicationId = "com.blankmediator.smsfromcsv"
         minSdk = 26
         targetSdk = 37
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 6
+        versionName = "1.4.1"
 
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }

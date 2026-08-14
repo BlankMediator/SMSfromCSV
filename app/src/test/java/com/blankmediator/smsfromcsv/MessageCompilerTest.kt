@@ -52,7 +52,39 @@ class MessageCompilerTest {
 
         val result = MessageCompiler.compile(table, MessageMode.SAME, "   ")
 
-        assertTrue(result.errors.any { it.contains("blank") })
+        assertEquals(listOf("Message text is blank."), result.errors)
+    }
+
+    @Test
+    fun suggestsPerRowModeForCompleteImportedMessageColumn() {
+        val table = CsvParser.parse(
+            "phone,message\n" +
+                "+61400000001,First message\n" +
+                "+61400000002,Second message"
+        )
+
+        val suggested = MessageCompiler.suggestedModeAfterImport(
+            table,
+            currentMode = MessageMode.SAME,
+            editorText = ""
+        )
+
+        assertEquals(MessageMode.PER_ROW, suggested)
+    }
+
+    @Test
+    fun doesNotOverrideAnExplicitModeOrIncompleteMessageColumn() {
+        val complete = CsvParser.parse("phone,message\n+61400000001,Per-row message")
+        val incomplete = CsvParser.parse("phone,message\n+61400000001,")
+
+        assertEquals(
+            MessageMode.TEMPLATE,
+            MessageCompiler.suggestedModeAfterImport(complete, MessageMode.TEMPLATE, "Hi {name}")
+        )
+        assertEquals(
+            MessageMode.SAME,
+            MessageCompiler.suggestedModeAfterImport(incomplete, MessageMode.SAME, "")
+        )
     }
 
     @Test
