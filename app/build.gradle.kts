@@ -3,15 +3,15 @@ plugins {
 }
 
 android {
-    namespace = "com.example.weddingsmssender"
+    namespace = "com.blankmediator.smsfromcsv"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.example.weddingsmssender"
+        applicationId = "com.blankmediator.smsfromcsv"
         minSdk = 26
         targetSdk = 37
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
 
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
