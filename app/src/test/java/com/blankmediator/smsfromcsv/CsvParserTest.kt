@@ -1,4 +1,4 @@
-package com.example.weddingsmssender
+package com.blankmediator.smsfromcsv
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows

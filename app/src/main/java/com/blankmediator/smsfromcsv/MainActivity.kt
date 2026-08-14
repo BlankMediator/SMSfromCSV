@@ -1,4 +1,4 @@
-package com.example.weddingsmssender
+package com.blankmediator.smsfromcsv
 
 import android.Manifest
 import android.annotation.SuppressLint

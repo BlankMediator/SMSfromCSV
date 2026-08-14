@@ -91,7 +91,7 @@ The manifest requests only:
 
 It does not request `INTERNET`, `READ_SMS`, `RECEIVE_SMS`, contacts, location, or broad file access. Incoming replies remain in the phone's normal SMS application. Whether outgoing messages appear there can vary by Android and device manufacturer because SMSfromCSV is not the default SMS handler.
 
-The technical application ID remains `com.example.weddingsmssender` so existing installations can be upgraded in place from earlier private builds. The visible product and project name is SMSfromCSV.
+The Android application ID and namespace are `com.blankmediator.smsfromcsv`. Because this differs from earlier private Wedding SMS Sender builds, Android installs SMSfromCSV as a separate app instead of upgrading the old installation.
 
 ## Operational and distribution notes
 
@@ -103,8 +103,8 @@ The technical application ID remains `com.example.weddingsmssender` so existing 
 
 ## Project layout
 
-- `app/src/main/java/com/example/weddingsmssender/MainActivity.kt` - one-screen UI, permission request, confirmation, progress, and SMS submission.
-- `app/src/main/java/com/example/weddingsmssender/MessagePreparation.kt` - CSV parsing, templating, phone validation, and duplicate detection.
-- `app/src/test/java/com/example/weddingsmssender/` - JVM unit tests for parsing and message preparation.
+- `app/src/main/java/com/blankmediator/smsfromcsv/MainActivity.kt` - one-screen UI, permission request, confirmation, progress, and SMS submission.
+- `app/src/main/java/com/blankmediator/smsfromcsv/MessagePreparation.kt` - CSV parsing, templating, phone validation, and duplicate detection.
+- `app/src/test/java/com/blankmediator/smsfromcsv/` - JVM unit tests for parsing and message preparation.
 - `app/src/main/AndroidManifest.xml` - the single SMS permission and launcher activity.
 - `examples/recipients_template.csv` - editable three-recipient example.

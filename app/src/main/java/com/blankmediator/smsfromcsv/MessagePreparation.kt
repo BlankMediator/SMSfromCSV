@@ -1,4 +1,4 @@
-package com.example.weddingsmssender
+package com.blankmediator.smsfromcsv
 
 import java.util.Locale
 
