@@ -134,9 +134,11 @@ object ImagePreparer {
         }
     }
 
-    private fun calculateInSampleSize(width: Int, height: Int, maxWidth: Int, maxHeight: Int): Int {
+    internal fun calculateInSampleSize(width: Int, height: Int, maxWidth: Int, maxHeight: Int): Int {
         var sample = 1
-        while (width / (sample * 2) >= maxWidth && height / (sample * 2) >= maxHeight) {
+        // Sample very wide or very tall images before decoding as well. Using && here can
+        // decode a huge panoramic bitmap at full resolution and exhaust the app's memory.
+        while (width / (sample * 2) >= maxWidth || height / (sample * 2) >= maxHeight) {
             sample *= 2
         }
         return sample.coerceAtLeast(1)

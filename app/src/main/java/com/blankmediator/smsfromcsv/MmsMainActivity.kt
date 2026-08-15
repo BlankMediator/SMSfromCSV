@@ -716,7 +716,7 @@ class MmsMainActivity : Activity() {
 
     private fun getSmsManager(subscriptionId: Int?): SmsManager {
         val resolvedId = subscriptionId ?: SubscriptionManager.getDefaultSmsSubscriptionId().also {
-            require(SubscriptionManager.isValidSubscriptionId(it)) {
+            require(isValidSubscriptionIdCompat(it)) {
                 "Android has no valid default SMS/MMS subscription."
             }
         }
@@ -729,8 +729,12 @@ class MmsMainActivity : Activity() {
     }
 
     private fun hasValidDefaultSubscription(): Boolean {
-        return SubscriptionManager.isValidSubscriptionId(SubscriptionManager.getDefaultSmsSubscriptionId())
+        return isValidSubscriptionIdCompat(SubscriptionManager.getDefaultSmsSubscriptionId())
     }
+
+    /** SubscriptionManager.isValidSubscriptionId() is unavailable on Android 8 and 9. */
+    private fun isValidSubscriptionIdCompat(subscriptionId: Int): Boolean =
+        subscriptionId > SubscriptionManager.INVALID_SUBSCRIPTION_ID
 
     private fun routesStillValid(messages: List<MediaOutgoing>): Boolean {
         if (messages.any { it.base.subscriptionId == null } && !hasValidDefaultSubscription()) return false

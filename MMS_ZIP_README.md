@@ -22,4 +22,4 @@ Jane Smith,+61416950104,SIM1,images/invite-jane.jpg,"Hi {name}, here is your inv
 
 A blank `image` cell sends SMS. A nonblank `image` cell sends image MMS using that file from the ZIP. Images are resized/compressed before MMS composition to fit carrier limits.
 
-Build settings for this preview are Android API 36, version code 7, version name 1.5.0.
+Build settings for this preview are Android API 37, version code 8, version name 1.5.1.

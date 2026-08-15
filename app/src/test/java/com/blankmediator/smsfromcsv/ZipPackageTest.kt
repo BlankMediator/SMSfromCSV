@@ -8,6 +8,7 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import kotlin.io.path.createTempDirectory
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -18,7 +19,7 @@ class ZipPackageTest {
             "recipients.csv" to "name,phone,image,message\nJane,+61400000001,invite.jpg,Hi Jane\n".toByteArray(),
             "images/invite.jpg" to byteArrayOf(1, 2, 3)
         )
-        val root = createTempDir(prefix = "smsfromcsv-test-")
+        val root = createTempDirectory("smsfromcsv-test-").toFile()
         try {
             val imported = ZipPackageImporter.importZip("batch.zip", ByteArrayInputStream(zip), root)
             assertEquals(1, imported.table.rows.size)
@@ -37,7 +38,7 @@ class ZipPackageTest {
             "recipients.csv" to "phone,message\n+61400000001,Hi\n".toByteArray(),
             "../outside.jpg" to byteArrayOf(1)
         )
-        val root = createTempDir(prefix = "smsfromcsv-test-")
+        val root = createTempDirectory("smsfromcsv-test-").toFile()
         try {
             ZipPackageImporter.importZip("batch.zip", ByteArrayInputStream(zip), root)
         } finally {
