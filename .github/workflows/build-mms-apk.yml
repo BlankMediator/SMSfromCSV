@@ -1,4 +1,4 @@
-name: Build MMS APK
+name: Publish MMS v1.5
 
 on:
   push:
@@ -7,14 +7,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout build staging branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -28,29 +30,92 @@ jobs:
       - name: Install Android API 36
         run: sdkmanager "platforms;android-36"
 
-      - name: Reconstruct and verify MMS overlay
+      - name: Reconstruct v1.5 source overlay
         run: |
           cat .build/mms-app.part-* | base64 -d > /tmp/mms-app-overlay.zip
           unzip -t /tmp/mms-app-overlay.zip
           rm -rf /tmp/mms-app-overlay
           mkdir -p /tmp/mms-app-overlay
           unzip -q /tmp/mms-app-overlay.zip -d /tmp/mms-app-overlay
+          test -f /tmp/mms-app-overlay/app/src/main/java/com/blankmediator/smsfromcsv/MmsMainActivity.kt
+          test -f /tmp/mms-app-overlay/app/src/main/java/com/blankmediator/smsfromcsv/MmsPduWriter.kt
+
+      - name: Publish real source files to mms-v1.5
+        run: |
+          git fetch origin mms-v1.5:mms-v1.5
+          git checkout mms-v1.5
           cp -a /tmp/mms-app-overlay/app/. app/
+
           sed -i -E 's/compileSdk = [0-9]+/compileSdk = 36/; s/targetSdk = [0-9]+/targetSdk = 36/; s/applicationId = "com\.blankmediator\.smsfromcsv"/applicationId = "com.blankmediator.smsfromcsv.mms"/' app/build.gradle.kts
           sed -i 's/android:label="SMSfromCSV"/android:label="SMSfromCSV MMS"/' app/src/main/AndroidManifest.xml
-          chmod +x gradlew
-          grep -E 'applicationId|versionName|compileSdk|targetSdk' app/build.gradle.kts
-          grep 'android:label' app/src/main/AndroidManifest.xml
+
+          mkdir -p examples
+          cat > examples/recipients-mms.csv <<'CSV'
+          name,phone,sim,image,message
+          Jane Smith,+61416950104,SIM1,images/invite-jane.jpg,"Hi {name}, here is your invitation."
+          CSV
+
+          cat > MMS_ZIP_README.md <<'DOC'
+          # SMSfromCSV MMS v1.5
+
+          This branch adds CSV + ZIP image MMS sending while preserving normal SMS, personalised text, the 500-recipient safety cap, and multi-SIM routing.
+
+          The parallel-install build uses package ID `com.blankmediator.smsfromcsv.mms` and launcher label **SMSfromCSV MMS**, so it can coexist with the original app.
+
+          ## ZIP format
+
+          ```text
+          batch.zip
+          ├── recipients.csv
+          └── images/
+              └── invite-jane.jpg
+          ```
+
+          Example `recipients.csv`:
+
+          ```csv
+          name,phone,sim,image,message
+          Jane Smith,+61416950104,SIM1,images/invite-jane.jpg,"Hi {name}, here is your invitation."
+          ```
+
+          A blank `image` cell sends SMS. A nonblank `image` cell sends image MMS using that file from the ZIP. Images are resized/compressed before MMS composition to fit carrier limits.
+
+          Build settings for this preview are Android API 36, version code 7, version name 1.5.0.
+          DOC
+
+          git config user.name "BlankMediator"
+          git config user.email "130942180+BlankMediator@users.noreply.github.com"
+          git add app examples/recipients-mms.csv MMS_ZIP_README.md
+          if ! git diff --cached --quiet; then
+            git commit -m "Add CSV + ZIP image MMS support"
+            git push origin mms-v1.5
+          fi
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
 
-      - name: Build debug APK
-        run: ./gradlew --no-daemon assembleDebug
+      - name: Build parallel-install debug APK
+        run: |
+          ./gradlew --no-daemon assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk SMSfromCSV-v1.5-MMS-parallel.apk
+          sha256sum SMSfromCSV-v1.5-MMS-parallel.apk
 
-      - name: Upload APK
+      - name: Create or update GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v1.5.0-mms-preview
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" SMSfromCSV-v1.5-MMS-parallel.apk --clobber
+            gh release edit "$TAG" --target "$RELEASE_SHA" --title "SMSfromCSV MMS v1.5 preview" --prerelease --notes "CSV + ZIP per-recipient image MMS preview. Parallel-install package: com.blankmediator.smsfromcsv.mms. Sample recipient: +61416950104. Built and tested from branch mms-v1.5."
+          else
+            gh release create "$TAG" SMSfromCSV-v1.5-MMS-parallel.apk --target "$RELEASE_SHA" --title "SMSfromCSV MMS v1.5 preview" --prerelease --notes "CSV + ZIP per-recipient image MMS preview. Parallel-install package: com.blankmediator.smsfromcsv.mms. Sample recipient: +61416950104. Built and tested from branch mms-v1.5."
+          fi
+
+      - name: Upload CI artifact
         uses: actions/upload-artifact@v4
         with:
           name: SMSfromCSV-v1.5-MMS-parallel
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: SMSfromCSV-v1.5-MMS-parallel.apk
           if-no-files-found: error
