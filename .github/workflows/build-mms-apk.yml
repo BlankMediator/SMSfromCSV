@@ -1,0 +1,54 @@
+name: Build MMS APK
+
+on:
+  push:
+    branches:
+      - agent/build-mms-apk
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 37 SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-37" "build-tools;37.0.0"
+
+      - name: Reconstruct and verify MMS overlay
+        run: |
+          cat .build/mms-app.part-* | base64 -d > /tmp/mms-app-overlay.zip
+          unzip -t /tmp/mms-app-overlay.zip
+          rm -rf /tmp/mms-app-overlay
+          mkdir -p /tmp/mms-app-overlay
+          unzip -q /tmp/mms-app-overlay.zip -d /tmp/mms-app-overlay
+          cp -a /tmp/mms-app-overlay/app/. app/
+          chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Build debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SMSfromCSV-v1.5-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
