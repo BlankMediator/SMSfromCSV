@@ -48,6 +48,7 @@ jobs:
 
           sed -i -E 's/compileSdk = [0-9]+/compileSdk = 36/; s/targetSdk = [0-9]+/targetSdk = 36/; s/applicationId = "com\.blankmediator\.smsfromcsv"/applicationId = "com.blankmediator.smsfromcsv.mms"/' app/build.gradle.kts
           sed -i 's/android:label="SMSfromCSV"/android:label="SMSfromCSV MMS"/' app/src/main/AndroidManifest.xml
+          chmod +x gradlew
 
           mkdir -p examples
           cat > examples/recipients-mms.csv <<'CSV'
