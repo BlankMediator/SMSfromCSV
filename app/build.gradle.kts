@@ -7,11 +7,11 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.blankmediator.smsfromcsv"
+        applicationId = "com.blankmediator.smsfromcsv.mms"
         minSdk = 26
         targetSdk = 37
-        versionCode = 6
-        versionName = "1.4.1"
+        versionCode = 8
+        versionName = "1.5.1"
 
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }

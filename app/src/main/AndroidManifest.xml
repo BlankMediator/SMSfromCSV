@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
+
     <uses-feature
         android:name="android.hardware.telephony"
         android:required="false" />
@@ -14,17 +15,34 @@
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
-        android:label="SMSfromCSV"
+        android:label="SMSfromCSV MMS"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+
+        <!-- Kept for source compatibility; v1.5 launches the CSV + ZIP/MMS screen below. -->
         <activity
             android:name=".MainActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".MmsMainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Android's MMS service is granted temporary read access to each outgoing PDU URI. -->
+        <provider
+            android:name=".MmsPduProvider"
+            android:authorities="${applicationId}.mms"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <receiver
+            android:name=".MmsStatusReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>
