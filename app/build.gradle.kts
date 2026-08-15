@@ -4,14 +4,14 @@ plugins {
 
 android {
     namespace = "com.blankmediator.smsfromcsv"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.blankmediator.smsfromcsv"
+        applicationId = "com.blankmediator.smsfromcsv.mms"
         minSdk = 26
-        targetSdk = 37
-        versionCode = 6
-        versionName = "1.4.1"
+        targetSdk = 36
+        versionCode = 7
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
