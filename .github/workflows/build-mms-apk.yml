@@ -25,10 +25,13 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android 37 SDK
+      - name: Install newest available numeric Android SDK
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-37" "build-tools;37.0.0"
+          API=$(sdkmanager --list | grep -oE 'platforms;android-[0-9]+' | sed 's/.*-//' | sort -n | tail -1)
+          test -n "$API"
+          echo "CI Android API: $API"
+          sdkmanager "platforms;android-$API"
+          echo "CI_ANDROID_API=$API" >> "$GITHUB_ENV"
 
       - name: Reconstruct and verify MMS overlay
         run: |
@@ -38,7 +41,9 @@ jobs:
           mkdir -p /tmp/mms-app-overlay
           unzip -q /tmp/mms-app-overlay.zip -d /tmp/mms-app-overlay
           cp -a /tmp/mms-app-overlay/app/. app/
+          sed -i -E "s/compileSdk = [0-9]+/compileSdk = ${CI_ANDROID_API}/; s/targetSdk = [0-9]+/targetSdk = ${CI_ANDROID_API}/" app/build.gradle.kts
           chmod +x gradlew
+          cat app/build.gradle.kts
 
       - name: Unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
